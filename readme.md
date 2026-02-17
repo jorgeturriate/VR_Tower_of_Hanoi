@@ -99,7 +99,7 @@ Then click Enter VR using a compatible headset.
 
 A VR demonstration video is available in this repository.
 
-__(See the /demo folder)__
+[VR Demo](./demo/vr_demo.mp4)
 
 ## 📚 Academic Context
 
