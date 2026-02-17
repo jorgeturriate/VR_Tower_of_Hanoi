@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>HN Tower</title>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #moves {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: black;
+            font-size: 18px;
+            z-index: 10;
+        }
+
+        #finish {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: yellow;
+            font-size: 36px;
+            z-index: 20;
+            display: none;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.146.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div style="position: relative;" id="gamebox">
+        <div id="moves">Moves: <span id="movesui">0</span></div>
+        <div id="finish">Finish</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from './js/three.module.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import TWEEN from 'https://cdn.jsdelivr.net/npm/@tweenjs/tween.js@18.6.4/dist/tween.esm.js';
+      	import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/webxr/VRButton.js';
+
+        let moves = 0;
+        const movesui = document.getElementById("movesui");
+        const finishui = document.getElementById("finish");
+
+        // THREE.js Setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        renderer.xr.enabled = true;
+        document.body.appendChild(VRButton.createButton(renderer));
+
+        // Lights
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(0, 10, 10);
+        scene.add(light);
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+        scene.add(ambientLight);
+
+        // Game Setup
+        const disks = [];
+        const rods = [];
+        const scale= 1/2;
+        const rodHeight = 3 * scale;
+        const diskHeight = 0.3 * scale;
+
+        // Base
+        const baseGeometry = new THREE.BoxGeometry(8*scale, 0.5*scale, 3*scale);
+        const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x8b4513 });
+        const base = new THREE.Mesh(baseGeometry, baseMaterial);
+        base.position.y = -1.25*scale;
+        scene.add(base);
+
+        // Rods
+        for (let i = 0; i < 3; i++) {
+          const rodGeometry = new THREE.CylinderGeometry(0.1*scale, 0.1*scale, rodHeight, 32);
+          const rodMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
+          const rod = new THREE.Mesh(rodGeometry, rodMaterial);
+          rod.position.set((-2 + i * 2)*scale, -0.5*scale, 0);
+          scene.add(rod);
+          rods.push({ rod, disks: [] });
+        }
+
+        // Disks
+        const colors = [0xff0000, 0x00ff00, 0x0000ff];
+        for (let i = 0; i < 3; i++) {
+          const diskGeometry = new THREE.CylinderGeometry(
+            (0.5 - i * 0.1)*scale
+            , (0.5 - i * 0.1)*scale
+            , diskHeight
+            , 32
+          );
+          const diskMaterial = new THREE.MeshStandardMaterial({ color: colors[i] });
+          const disk = new THREE.Mesh(diskGeometry, diskMaterial);
+          disk.position.set(rods[0].rod.position.x, base.position.y + diskHeight * (i + 1), rods[0].rod.position.z);
+          disks.push(disk);
+          rods[0].disks.push(disk);
+          scene.add(disk);
+        }
+
+        // Controllers
+        const controller1 = renderer.xr.getController(0);
+        const controller2 = renderer.xr.getController(1);
+        scene.add(controller1, controller2);
+
+        // Helper function to setup the controller visuals
+        function setupController(controller) {
+          const geometry = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Vector3(0, 0, -1*scale),
+          ]);
+          const material = new THREE.LineBasicMaterial({ color: 0xffffff });
+          const line = new THREE.Line(geometry, material);
+          controller.add(line);
+
+          const sphere = new THREE.Mesh(
+            new THREE.SphereGeometry(0.05*scale),
+            new THREE.MeshBasicMaterial({ color: 0xff0000 })
+          );
+          sphere.position.z = -0.1*scale; // Position the sphere slightly in front of the controller
+          controller.add(sphere);
+        }
+
+        setupController(controller1);
+        setupController(controller2);
+
+        // VR Interaction Variables
+        const raycaster = new THREE.Raycaster();
+        let selectedDisk = null;
+        let originalRod = null;
+
+        // Handle grabbing a disk
+        function handleSelectStart(event) {
+          const controller = event.target;
+          const tempMatrix = new THREE.Matrix4();
+          tempMatrix.identity().extractRotation(controller.matrixWorld);
+          raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+          raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+          const intersects = raycaster.intersectObjects(disks);
+          if (intersects.length > 0) {
+            const intersectedDisk = intersects[0].object;
+
+            // Ensure it's the top disk of its rod
+            originalRod = rods.find((rod) => rod.disks[rod.disks.length - 1] === intersectedDisk);
+
+            if (originalRod) {
+              selectedDisk = intersectedDisk;
+              originalRod.disks.pop(); // Temporarily remove the top disk
+              controller.attach(selectedDisk);
+              selectedDisk.rotation.set(0, 0, 0); // Lock rotation
+            }
+          }
+        }
+
+        // Handle releasing a disk
+        function handleSelectEnd(event) {
+          if (selectedDisk) {
+            const controller = event.target;
+            scene.attach(selectedDisk);
+
+            const closestRod = rods.reduce((closest, rod) => {
+              const distance = Math.abs(selectedDisk.position.x - rod.rod.position.x);
+              return distance < Math.abs(selectedDisk.position.x - closest.rod.position.x) ? rod : closest;
+            }, rods[0]);
+
+            // Check if placement is valid
+            const topDiskOnTarget = closestRod.disks[closestRod.disks.length - 1];
+            const canPlace =
+              !topDiskOnTarget || // Rod is empty
+              selectedDisk.geometry.parameters.radiusTop < topDiskOnTarget.geometry.parameters.radiusTop; // Disk is smaller
+
+            if (canPlace) {
+              snapToRod(selectedDisk, closestRod);
+            } else {
+              // Return the disk to the original rod if placement is invalid
+              snapToRod(selectedDisk, originalRod);
+            }
+
+            selectedDisk.rotation.set(0, 0, 0); // Lock rotation
+            selectedDisk = null;
+            originalRod = null;
+          }
+        }
+
+        // Attach event listeners for both controllers
+        controller1.addEventListener('selectstart', handleSelectStart);
+        controller1.addEventListener('selectend', handleSelectEnd);
+        controller2.addEventListener('selectstart', handleSelectStart);
+        controller2.addEventListener('selectend', handleSelectEnd);
+
+        // Function to snap disk to a rod
+        function snapToRod(disk, rod) {
+          rod.disks.push(disk);
+          disk.position.set(
+            rod.rod.position.x,
+            base.position.y + rod.disks.length * diskHeight,
+            rod.rod.position.z
+          );
+        }
+
+        // Render loop for VR
+        function animate() {
+          renderer.setAnimationLoop(() => {
+            renderer.render(scene, camera);
+          });
+        }
+
+        animate();
+
+    </script>
+</body>
+
+</html>

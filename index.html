@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>HN tower</title>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #moves {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: black;
+            font-size: 18px;
+            z-index: 10;
+        }
+
+        #finish {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: yellow;
+            font-size: 36px;
+            z-index: 20;
+            display: none;
+        }
+    </style>
+    <!-- Import map for Three.js and addons -->
+    <script type="importmap">
+      {
+        "imports": {
+        	"three": "https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.module.js",
+          	"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.146.0/examples/jsm/"
+        }
+      }
+    </script> 
+</head>
+
+<body>
+
+    <div style="position: relative;" id="gamebox">
+        <div id="moves">Moves: <span id="movesui">0</span></div>
+        <div id="finish">Finish</div>
+    </div>
+
+    <script type="module">
+      	import * as THREE from './js/three.module.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import TWEEN from 'https://cdn.jsdelivr.net/npm/@tweenjs/tween.js@18.6.4/dist/tween.esm.js';
+      
+      	import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/webxr/VRButton.js';
+      	//import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+
+        let moves = 0;
+        let movesui = document.getElementById("movesui");
+        let finishui = document.getElementById("finish");
+
+        // Setup 
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xF5F5DC);
+
+        // Camera setup
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(10, 10, 15);
+        camera.lookAt(0, 0, 0);
+
+        // Renderer setup
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById("gamebox").appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040, 1.5); // Increase intensity
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        directionalLight.position.set(5, 10, 7.5).normalize();
+        scene.add(directionalLight);
+
+        // Create the base for the towers
+        const baseGeometry = new THREE.BoxGeometry(12, 1, 4);
+        const baseMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+        const base = new THREE.Mesh(baseGeometry, baseMaterial);
+        base.position.y = -0.5;
+        scene.add(base);
+
+        // Create towers
+        const towers = [];
+        const towerHeight = 6;
+
+        function createTower(x) {
+            const geometry = new THREE.CylinderGeometry(0.2, 0.2, towerHeight, 32);
+            const material = new THREE.MeshPhongMaterial({ color: 0x808080 });
+            const tower = new THREE.Mesh(geometry, material);
+            tower.position.set(x, towerHeight / 2, 0);
+            scene.add(tower);
+            towers.push(tower);
+        }
+
+        createTower(-4);
+        createTower(0);
+        createTower(4);
+
+        const disks = [[], [], []];
+
+        // Function to interpolate between two colors
+        function interpolateColor(color1, color2, factor) {
+            const result = color1.clone();
+            result.lerp(color2, factor);
+            return result;
+        }
+
+        function createDisk(radius, height, x, y, towerIndex, color) {
+            const geometry = new THREE.CylinderGeometry(radius, radius, height, 32);
+            const material = new THREE.MeshPhongMaterial({ color });
+            const disk = new THREE.Mesh(geometry, material);
+            disk.position.set(x, y, 0);
+            scene.add(disk);
+            disks[towerIndex].push(disk);
+        }
+
+        // Base color and target color for the gradient
+        const baseColor = new THREE.Color(0x7B3F00); // Blue
+        const targetColor = new THREE.Color(0xD2B48C); // White
+
+        // Number of disks
+        const numDisks = 3;
+
+        // Create disks with gradient colors
+        for (let i = 0; i < numDisks; i++) {
+            const factor = i / (numDisks - 1); // Calculate interpolation factor
+            const color = interpolateColor(baseColor, targetColor, factor); // Interpolate color
+            createDisk(1.5 - 0.25 * i, 0.5, -4, 0.25 + 0.5 * i, 0, color); // Create disk with interpolated color
+        }
+
+        // OrbitControls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.25;
+        controls.enableZoom = true;
+
+        // Variables for handling disk movement
+        let selectedDisk = null;
+        let initialPosition = null;
+        let initialTowerIndex = null;
+        let offset = new THREE.Vector3();
+        let isDragging = false;
+
+        // Raycaster for detecting clicks
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function onPointerDown(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(disks.flat());
+
+            if (intersects.length > 0 && !selectedDisk) {
+                const intersectedDisk = intersects[0].object;
+                const towerIndex = disks.findIndex(tower => tower.includes(intersectedDisk));
+
+                // Ensure only the top disk can be moved
+                if (disks[towerIndex][disks[towerIndex].length - 1] === intersectedDisk) {
+                    // Select the disk
+                    selectedDisk = intersectedDisk;
+                    initialPosition = selectedDisk.position.clone();
+                    initialTowerIndex = towerIndex;
+                    offset.copy(intersects[0].point).sub(selectedDisk.position);
+                    isDragging = true;
+                    controls.enableRotate = false; // Disable camera rotation while dragging
+                }
+            }
+        }
+
+        function onPointerMove(event) {
+            if (isDragging && selectedDisk) {
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+                const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+                const intersection = new THREE.Vector3();
+                raycaster.ray.intersectPlane(planeZ, intersection);
+
+                selectedDisk.position.copy(intersection.sub(offset));
+                selectedDisk.position.z = 0; // Keep the disk in the Z=0 plane
+            }
+        }
+
+        function onPointerUp(event) {
+            if (isDragging && selectedDisk) {
+                let closestTowerIndex = -1;
+                let minDistance = Infinity;
+
+                // Find the closest tower to the disk's current position
+                towers.forEach((tower, index) => {
+                    const distance = tower.position.distanceTo(selectedDisk.position);
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        closestTowerIndex = index;
+                    }
+                });
+
+                const targetTowerIndex = closestTowerIndex;
+
+                // Check if the move is valid
+                const fromTowerDisks = disks[initialTowerIndex];
+                const toTowerDisks = disks[targetTowerIndex];
+
+                if (toTowerDisks.length === 0 || selectedDisk.geometry.parameters.radiusTop < toTowerDisks[toTowerDisks.length - 1].geometry.parameters.radiusTop) {
+                    // Move is valid, animate to the target tower
+                    const targetPosition = {
+                        x: towers[targetTowerIndex].position.x,
+                        y: 0.25 + toTowerDisks.length * 0.5,
+                        z: 0
+                    };
+
+                    new TWEEN.Tween(selectedDisk.position)
+                        .to(targetPosition, 500)
+                        .easing(TWEEN.Easing.Quadratic.Out)
+                        .start();
+
+                    // Update disk stacks
+                    fromTowerDisks.pop();
+                    toTowerDisks.push(selectedDisk);
+
+                    // Update moves
+                    moves++;
+                    movesui.innerText = moves;
+
+                    // Check if game is finished
+                    if (toTowerDisks.length === numDisks && targetTowerIndex !== initialTowerIndex) {
+                        highlightTower(targetTowerIndex);
+                        finishui.style.display = "block";
+                    }
+                } else {
+                    // Invalid move, move back to initial position
+                    new TWEEN.Tween(selectedDisk.position)
+                        .to(initialPosition, 500)
+                        .easing(TWEEN.Easing.Quadratic.Out)
+                        .start();
+                }
+
+                selectedDisk = null;
+                initialPosition = null;
+                initialTowerIndex = null;
+                isDragging = false;
+                controls.enableRotate = true; // Enable camera rotation after dragging
+            }
+        }
+
+        function highlightTower(towerIndex) {
+            disks[towerIndex].forEach(disk => {
+                disk.material.color.set(0x39FF14); // Set color to green
+            });
+        }
+
+        window.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+      
+      
+      // Initialize the XR renderer
+      renderer.xr.enabled = true;
+      document.body.appendChild(VRButton.createButton(renderer));
+
+      // Add XR session handling
+      let hitTestSource = null;
+      let localReferenceSpace = null;
+      
+      renderer.xr.addEventListener('sessionstart', async () => {
+          const session = renderer.xr.getSession();
+          localReferenceSpace = await session.requestReferenceSpace('local');
+          const viewerSpace = await session.requestReferenceSpace('viewer');
+          hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+      });
+
+      renderer.xr.addEventListener('sessionend', () => {
+          hitTestSource = null;
+      });
+      
+      // VR Controllers
+	  const controller1 = renderer.xr.getController(0);
+	  const controller2 = renderer.xr.getController(1);
+	  scene.add(controller1, controller2);
+      
+      function setupController(controller) {
+        const geometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 0, -1),
+        ]);
+        const material = new THREE.LineBasicMaterial({ color: 0xffffff });
+        const line = new THREE.Line(geometry, material);
+        controller.add(line);
+        const sphere = new THREE.Mesh(
+            new THREE.SphereGeometry(0.05),
+            new THREE.MeshBasicMaterial({ color: 0xff0000 })
+        );
+        sphere.position.z = -0.1; // Position the sphere slightly in front of the controller
+        controller.add(sphere);
+      }
+
+      setupController(controller1);
+      setupController(controller2);
+      
+      // VR Controller Interaction
+      function handleSelectStart(event) {
+        const controller = event.target;
+        const tempMatrix = new THREE.Matrix4();
+        tempMatrix.identity().extractRotation(controller.matrixWorld);
+        raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+        raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+        const intersects = raycaster.intersectObjects(disks);
+        if (intersects.length > 0) {
+          const intersectedDisk = intersects[0].object;
+
+          // Ensure it's the top disk of its rod
+          originalRod = rods.find(rod => rod.disks[rod.disks.length - 1] === intersectedDisk);
+
+          if (originalRod) {
+            selectedDisk = intersectedDisk;
+            originalRod.disks.pop(); // Temporarily remove the top disk
+            controller.attach(selectedDisk);
+            selectedDisk.rotation.set(0, 0, 0); // Lock rotation
+          }
+        }
+      }
+      
+      function handleSelectEnd(event) {
+        if (selectedDisk) {
+          const controller = event.target;
+          scene.attach(selectedDisk);
+
+          const closestRod = rods.reduce((closest, rod) => {
+            const distance = Math.abs(selectedDisk.position.x - rod.rod.position.x);
+            return distance < Math.abs(selectedDisk.position.x - closest.rod.position.x) ? rod : closest;
+          }, rods[0]);
+
+          // Check if placement is valid
+          const topDiskOnTarget = closestRod.disks[closestRod.disks.length - 1];
+          const canPlace =
+            !topDiskOnTarget || // Rod is empty
+            selectedDisk.geometry.parameters.radiusTop < topDiskOnTarget.geometry.parameters.radiusTop; // Disk is smaller
+
+          if (canPlace) {
+            snapToRod(selectedDisk, closestRod);
+          } else {
+            // Return the disk to the original rod if placement is invalid
+            snapToRod(selectedDisk, originalRod);
+          }
+
+          selectedDisk.rotation.set(0, 0, 0); // Lock rotation
+          selectedDisk = null;
+          originalRod = null;
+        }
+      }
+
+      controller1.addEventListener('selectstart', handleSelectStart);
+      controller1.addEventListener('selectend', handleSelectEnd);
+      controller2.addEventListener('selectstart', handleSelectStart);
+      controller2.addEventListener('selectend', handleSelectEnd);
+
+      
+      
+      // Animate function with hit-test logic
+      function animate() {
+          renderer.setAnimationLoop(() => {
+              if (renderer.xr.isPresenting && hitTestSource) {
+                  const frame = renderer.xr.getFrame();
+                  const referenceSpace = renderer.xr.getReferenceSpace();
+                  const viewerPose = frame.getViewerPose(referenceSpace);
+
+                  if (viewerPose) {
+                      const hitTestResults = frame.getHitTestResults(hitTestSource);
+                      if (hitTestResults.length > 0) {
+                          const hit = hitTestResults[0];
+                          const hitPose = hit.getPose(localReferenceSpace);
+
+                          // Align the base with the ground
+                          base.position.set(hitPose.transform.position.x, hitPose.transform.position.y, hitPose.transform.position.z);
+                          base.quaternion.set(
+                              hitPose.transform.orientation.x,
+                              hitPose.transform.orientation.y,
+                              hitPose.transform.orientation.z,
+                              hitPose.transform.orientation.w
+                          );
+                      }
+                  }
+              }
+
+              // Regular rendering
+              controls.update();
+              TWEEN.update();
+              renderer.render(scene, camera);
+          });
+      }
+      
+      
+        /*function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            TWEEN.update();
+            renderer.render(scene, camera);
+        }*/
+      
+      
+        animate();
+    </script>
+</body>
+
+</html>
